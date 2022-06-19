@@ -1,10 +1,29 @@
 from django.db import models
 
 
-SHOP_UNIT_TYPE = (
-	(1, "OFFER"),
-	(2, "CATEGORY")
-)
+class ShopUnitType(models.TextChoices):
+	OFFER = "OFFER"
+	CATEGORY = "CATEGORY"
+
+
+class CustomManager(models.Manager):
+	def bfs_by_uuid(self, uuid: str):
+		return super().raw("""
+			WITH RECURSIVE tree(uuid, name, date, parent_id, unit_type, price, lvl) AS (
+				SELECT uuid, name, date, parent_id, unit_type, price, 0
+				FROM shop_unit_shopunit WHERE uuid = %s
+			  UNION ALL
+				SELECT su.uuid, su.name, su.date, su.parent_id, su.unit_type, su.price, lvl + 1
+				FROM shop_unit_shopunit AS su INNER JOIN tree AS t on su.parent_id = t.uuid
+			) SELECT * FROM tree order by lvl;
+		""", params=(uuid.replace("-", ""),))
+
+	def get_parent_price(self, uuid: str):
+		return super().raw(
+			"SELECT uuid, SUM(price) AS price, count(uuid) AS ch_count FROM shop_unit_shopunit WHERE parent_id = %s",
+			params=(uuid.replace("-", ""),)
+		)[0]
+
 
 class ShopUnit(models.Model):
 	uuid = models.UUIDField(
@@ -15,22 +34,28 @@ class ShopUnit(models.Model):
 		max_length=2048,
 		verbose_name="Имя товара/категории",
 	)
-	date = models.DateTimeField(
+	date = models.CharField(
+		max_length=32,
 		verbose_name="Время последнего обновления элемента",
 	)
 	parent = models.ForeignKey(
 		'self',
-		on_delete=models.CASCADE,
+		null=True,
+		default=None,
+		on_delete=models.CASCADE
 	)
-	type = models.IntegerField(
-		choices=SHOP_UNIT_TYPE,
+	unit_type = models.CharField(
+		max_length=8,
+		choices=ShopUnitType.choices,
 		verbose_name="Тип элемента - категория или товар",
 	)
-	price = models.BigIntegerField(
+	price = models.PositiveBigIntegerField(
 		null=True,
 		default=None,
 		verbose_name="Целое число, для категории - это средняя цена всех дочерних товаров",
 	)
+	objects = models.Manager()
+	custom_objects = CustomManager()
 
 
 class ShopUnitStatistic(models.Model):
@@ -42,7 +67,8 @@ class ShopUnitStatistic(models.Model):
 		max_length=2048,
 		verbose_name="Имя товара/категории",
 	)
-	date = models.DateTimeField(
+	date = models.CharField(
+		max_length=32,
 		verbose_name="Время последнего обновления элемента",
 	)
 	parentId = models.UUIDField(
@@ -51,11 +77,12 @@ class ShopUnitStatistic(models.Model):
 		db_index=True,
 		verbose_name="UUID родительской категории",
 	)
-	type = models.IntegerField(
-		choices=SHOP_UNIT_TYPE,
+	unit_type = models.CharField(
+		max_length=8,
+		choices=ShopUnitType.choices,
 		verbose_name="Тип элемента - категория или товар",
 	)
-	price = models.BigIntegerField(
+	price = models.PositiveBigIntegerField(
 		null=True,
 		default=None,
 		verbose_name="Целое число, для категории - это средняя цена всех дочерних товаров",
