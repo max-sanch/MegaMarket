@@ -43,3 +43,24 @@ def nodes(request, uuid):
 	except Exception:
 		return ErrorResponse(400, "Validation Failed")
 	return JsonResponse(unit)
+
+@require_http_methods(["GET"])
+def sales(request):
+	try:
+		date = request.headers.get("date") if request.GET.get('date') is None else request.GET.get('date')
+		units = services.get_sales(date)
+	except Exception:
+		return ErrorResponse(400, "Validation Failed")
+	return JsonResponse(units)
+
+@require_http_methods(["GET"])
+def node_statistic(request, uuid):
+	try:
+		date_start = request.headers.get("dateStart") if request.GET.get('dateStart') is None else request.GET.get('dateStart')
+		date_end = request.headers.get("dateEnd") if request.GET.get('dateEnd') is None else request.GET.get('dateEnd')
+		units = services.get_node_statistic(uuid, date_start, date_end)
+	except models.ShopUnitStatistic.DoesNotExist:
+		return ErrorResponse(404, "Item not found")
+	except Exception:
+		return ErrorResponse(400, "Validation Failed")
+	return JsonResponse(units)

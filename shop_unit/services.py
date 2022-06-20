@@ -1,6 +1,7 @@
-from datetime import datetime
+import datetime
 from uuid import UUID
 
+from django.conf import settings
 from django.db import transaction
 from pydantic import BaseModel, Field, validator, root_validator
 
@@ -40,15 +41,15 @@ class ImportUnit(BaseModel):
 
 class ImportData(BaseModel):
 	items: list[ImportUnit]
-	update_date: str = Field(alias="updateDate")
+	update_date: datetime.datetime = Field(alias="updateDate")
 
-	@validator('update_date')
+	@validator('update_date', pre=True)
 	def update_date_format(cls, v):
 		try:
-			datetime.fromisoformat(v.replace('Z', ''))
+			datetime.datetime.fromisoformat(v.replace('Z', ''))
 		except ValueError:
 			raise ValueError("field 'updateDate' does not conform to ISO 8601 format")
-		return v
+		return v.replace('Z', '+00:00')
 
 
 @transaction.atomic
@@ -108,7 +109,9 @@ def create_or_update_units(data):
 		if unit.unit_type == models.ShopUnitType.CATEGORY:
 			curr_unit = unit
 		else:
+			add_unit_statistic(unit)
 			curr_unit = unit.parent
+
 		if curr_unit is not None:
 			unit_set.add(curr_unit)
 			if curr_unit.parent is not None and curr_unit.parent in unit_set:
@@ -135,7 +138,7 @@ def get_shop_unit_by_uuid(uuid: str) -> dict:
 		curr_unit = {
 			"id": unit.uuid,
 			"name": unit.name,
-			"date": unit.date,
+			"date": unit.date.strftime(settings.DATETIME_FORMAT)[:-3] + "Z",
 			"parentId": unit.parent.uuid if unit.parent is not None else None,
 			"type": models.ShopUnitType[unit.unit_type],
 			"price": unit.price
@@ -144,6 +147,8 @@ def get_shop_unit_by_uuid(uuid: str) -> dict:
 		if curr_unit["type"] == models.ShopUnitType.CATEGORY:
 			curr_unit["children"] = []
 			parent_links[curr_unit["id"]] = curr_unit["children"]
+		else:
+			curr_unit["children"] = None
 
 		if not head_unit:
 			head_unit = curr_unit
@@ -152,16 +157,82 @@ def get_shop_unit_by_uuid(uuid: str) -> dict:
 	return head_unit
 
 
-def update_parent_price(units, date=None):
-	for unit in units:
-		curr_unit = unit
+def get_sales(date_str: str) -> dict:
+	try:
+		date = datetime.datetime.fromisoformat(date_str.replace('Z', ''))
+	except ValueError:
+		raise ValueError("date does not conform to ISO 8601 format")
+
+	start = date - datetime.timedelta(days=1)
+	print(start, date)
+	response_data = {"items": []}
+
+	for unit in models.ShopUnit.objects.filter(date__gte=start, date__lte=date, unit_type=models.ShopUnitType.OFFER):
+		response_data["items"].append({
+			"id": unit.uuid,
+			"name": unit.name,
+			"date": unit.date.strftime(settings.DATETIME_FORMAT)[:-3] + "Z",
+			"parentId": unit.parent.uuid if unit.parent is not None else None,
+			"price": unit.price,
+			"type": unit.unit_type
+		})
+	return response_data
+
+
+def get_node_statistic(uuid: str, date_start_str: str, date_end_str: str) -> dict:
+	validations.validate_uuid(uuid)
+	try:
+		date_start = datetime.datetime.fromisoformat(date_start_str.replace('Z', ''))
+		date_end = datetime.datetime.fromisoformat(date_end_str.replace('Z', ''))
+	except ValueError:
+		raise ValueError("date does not conform to ISO 8601 format")
+
+	response_data = {"items": []}
+	unit_statistic = models.ShopUnitStatistic.objects.filter(
+		date__gte=date_start,
+		date__lt=date_end,
+		shop_unit__uuid=uuid
+	)
+
+	if len(unit_statistic) == 0:
+		raise models.ShopUnitStatistic.DoesNotExist("units with given parameters were not found")
+
+	for unit in unit_statistic:
+		response_data["items"].append({
+			"id": unit.shop_unit.uuid,
+			"name": unit.name,
+			"date": unit.date.strftime(settings.DATETIME_FORMAT)[:-3] + "Z",
+			"parentId": unit.parent_id,
+			"price": unit.price,
+			"type": unit.unit_type
+		})
+	return response_data
+
+
+def update_parent_price(units: list[models.ShopUnit], date=None):
+	for curr_unit in units:
 		while curr_unit is not None:
-			sum_price = models.ShopUnit.custom_objects.get_parent_price(str(curr_unit.uuid))
-			if sum_price.price is None:
+			parent_price = models.ShopUnit.custom_objects.get_parent_price(str(curr_unit.uuid))
+
+			if parent_price.price is None:
 				curr_unit.price = None
 			else:
-				curr_unit.price = sum_price.price // sum_price.ch_count
+				curr_unit.price = parent_price.price // parent_price.ch_count
+
 			if date is not None:
 				curr_unit.date = date
 			curr_unit.save()
+			add_unit_statistic(curr_unit)
 			curr_unit = curr_unit.parent
+
+
+def add_unit_statistic(unit: models.ShopUnit):
+	unit_statistic = models.ShopUnitStatistic(
+		shop_unit=unit,
+		name=unit.name,
+		date=unit.date,
+		parent_id=unit.parent.uuid if unit.parent is not None else None,
+		unit_type=unit.unit_type,
+		price=unit.price
+	)
+	unit_statistic.save()

@@ -19,10 +19,17 @@ class CustomManager(models.Manager):
 		""", params=(uuid.replace("-", ""),))
 
 	def get_parent_price(self, uuid: str):
-		return super().raw(
-			"SELECT uuid, SUM(price) AS price, count(uuid) AS ch_count FROM shop_unit_shopunit WHERE parent_id = %s",
-			params=(uuid.replace("-", ""),)
-		)[0]
+		return super().raw("""
+			WITH RECURSIVE tree(uuid, parent_id, unit_type, price) AS (
+				SELECT uuid, parent_id, unit_type, price
+				FROM shop_unit_shopunit WHERE uuid = %s
+			  UNION ALL
+				SELECT su.uuid, su.parent_id, su.unit_type, su.price
+				FROM shop_unit_shopunit AS su INNER JOIN tree AS t on su.parent_id = t.uuid
+			)
+			SELECT '1' AS uuid, SUM(price) AS price, count(uuid) AS ch_count
+			FROM tree WHERE unit_type = 'OFFER'
+		""", params=(uuid.replace("-", ""),))[0]
 
 
 class ShopUnit(models.Model):
@@ -34,8 +41,7 @@ class ShopUnit(models.Model):
 		max_length=2048,
 		verbose_name="Имя товара/категории",
 	)
-	date = models.CharField(
-		max_length=32,
+	date = models.DateTimeField(
 		verbose_name="Время последнего обновления элемента",
 	)
 	parent = models.ForeignKey(
@@ -67,11 +73,10 @@ class ShopUnitStatistic(models.Model):
 		max_length=2048,
 		verbose_name="Имя товара/категории",
 	)
-	date = models.CharField(
-		max_length=32,
+	date = models.DateTimeField(
 		verbose_name="Время последнего обновления элемента",
 	)
-	parentId = models.UUIDField(
+	parent_id = models.UUIDField(
 		null=True,
 		default=None,
 		db_index=True,
