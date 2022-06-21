@@ -13,16 +13,14 @@ class ErrorResponse(JsonResponse):
 	def get_data(self):
 		return {"code": self.code, "message": self.message}
 
+
 @require_http_methods(["POST"])
 def imports(request):
-	services.create_or_update_units(request.read())
+	try:
+		services.create_or_update_units(request.read())
+	except Exception:
+		return ErrorResponse(400, "Validation Failed")
 	return HttpResponse(content_type="application/json")
-
-	# try:
-	# 	services.create_or_update_units(request.read())
-	# except Exception:
-	# 	return ErrorResponse(400, "Validation Failed")
-	# return HttpResponse(content_type="application/json")
 
 @require_http_methods(["DELETE"])
 def delete(request, uuid):
