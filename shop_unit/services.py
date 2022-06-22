@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, validator, root_validator
 from shop_unit import models, validations
 
 
-class ImportUnit(BaseModel):
+class ShopUnitImport(BaseModel):
 	uuid: UUID = Field(alias="id")
 	parent_id: UUID = Field(alias="parentId", default=None)
 	unit_type: models.ShopUnitType = Field(alias="type")
@@ -18,6 +18,8 @@ class ImportUnit(BaseModel):
 
 	@validator('price', pre=True, allow_reuse=True)
 	def price_type_and_value(cls, v):
+		"""Проверяет является ли поле price типом integer и является ли это число больше либо равным нулю"""
+
 		if v is not None:
 			if type(v) is not int:
 				raise ValueError("field 'price' must be of type integer")
@@ -27,12 +29,16 @@ class ImportUnit(BaseModel):
 
 	@validator('name', pre=True, allow_reuse=True)
 	def name_type(cls, v):
+		"""Проверяет является ли поле name типом string"""
+
 		if type(v) is not str:
 			raise ValueError("field 'name' must be of type string")
 		return v
 
 	@root_validator(allow_reuse=True)
 	def offer_and_category_price(cls, values):
+		"""Проверяет наличие цены у товара и её отсутствие у категории"""
+
 		if values.get("unit_type") == models.ShopUnitType.CATEGORY and values.get("price") is not None:
 			raise ValueError("field 'price' must be empty for CATEGORY")
 		if values.get("unit_type") == models.ShopUnitType.OFFER and values.get("price") is None:
@@ -40,12 +46,14 @@ class ImportUnit(BaseModel):
 		return values
 
 
-class ImportData(BaseModel):
-	items: list[ImportUnit]
+class ShopUnitImportRequest(BaseModel):
+	items: list[ShopUnitImport]
 	update_date: datetime.datetime = Field(alias="updateDate")
 
 	@validator('update_date', pre=True)
 	def update_date_format(cls, v):
+		"""Проверяет соответствует ли поле updateDate формату ISO 8601"""
+
 		try:
 			datetime.datetime.fromisoformat(v.replace('Z', ''))
 		except ValueError:
@@ -54,22 +62,15 @@ class ImportData(BaseModel):
 
 
 @transaction.atomic
-def create_or_update_units(data: Union[str, bytes]):
+def create_or_update_units(data: Union[str, bytes]) -> None:
 	"""Создаёт новые объекты ShopUnit, а существующие обновляет"""
-	import_data = ImportData.parse_raw(data)
-	unit_indexes = {}
+
+	import_data = ShopUnitImportRequest.parse_raw(data)
+	unit_indexes = _get_unit_indexes(import_data)
 	unit_set = set()
 
-	for i in range(len(import_data.items)):
-		item = import_data.items[i]
-
-		if unit_indexes.get(item.uuid) is None:
-			unit_indexes[item.uuid] = i
-		else:
-			raise ValueError("there should not be multiple units with the same uuid")
-
-	for i in range(len(import_data.items)):
-		parent, item = _get_parent_and_item(i, import_data, unit_indexes)
+	for idx in range(len(import_data.items)):
+		parent, item = _get_parent_and_item(idx, import_data, unit_indexes)
 		unit, created = models.ShopUnit.objects.get_or_create(
 			uuid=item.uuid,
 			defaults={
@@ -82,7 +83,7 @@ def create_or_update_units(data: Union[str, bytes]):
 		)
 
 		if not created:
-			validations.validate_type(unit.unit_type, models.ShopUnitType[item.unit_type])
+			validations.validate_type(unit.unit_type, item.unit_type)
 			unit.name = item.name
 			unit.date = import_data.update_date
 			unit.parent = parent
@@ -94,8 +95,8 @@ def create_or_update_units(data: Union[str, bytes]):
 		if unit.unit_type == models.ShopUnitType.CATEGORY:
 			curr_unit = unit
 		else:
-			_add_unit_statistic(unit)
 			curr_unit = unit.parent
+			_add_unit_statistic(unit)
 
 		if curr_unit is not None:
 			unit_set.add(curr_unit)
@@ -105,8 +106,9 @@ def create_or_update_units(data: Union[str, bytes]):
 	_update_parent_price(unit_set, import_data.update_date)
 
 
-def delete_shop_unit(uuid: str):
+def delete_shop_unit(uuid: str) -> None:
 	"""Удаляет объект ShopUnit с указанным UUID, все его дочерние объекты и его статистику обновлений"""
+
 	validations.validate_uuid(uuid)
 	unit = models.ShopUnit.objects.get(uuid=uuid)
 	parent = unit.parent
@@ -116,6 +118,7 @@ def delete_shop_unit(uuid: str):
 
 def get_shop_unit_by_uuid(uuid: str) -> dict:
 	"""Возвращает информацию об объекте ShopUnit с указанным UUID и информацию о его дочерних объектах"""
+
 	validations.validate_uuid(uuid)
 	units = models.ShopUnit.custom_objects.bfs_by_uuid(uuid=uuid)
 	parent_links = {}
@@ -128,14 +131,13 @@ def get_shop_unit_by_uuid(uuid: str) -> dict:
 			"date": unit.date.strftime(settings.DATETIME_FORMAT)[:-3] + "Z",
 			"parentId": unit.parent.uuid if unit.parent is not None else None,
 			"type": models.ShopUnitType[unit.unit_type],
-			"price": unit.price
+			"price": unit.price,
+			"children": None
 		}
 
 		if curr_unit["type"] == models.ShopUnitType.CATEGORY:
 			curr_unit["children"] = []
 			parent_links[curr_unit["id"]] = curr_unit["children"]
-		else:
-			curr_unit["children"] = None
 
 		if not head_unit:
 			head_unit = curr_unit
@@ -146,13 +148,13 @@ def get_shop_unit_by_uuid(uuid: str) -> dict:
 
 def get_sales(date_str: str) -> dict:
 	"""Возвращает списка товаров, цена которых была обновлена за последние 24 часа включительно от времени переданном в запросе"""
+
 	try:
 		date = datetime.datetime.fromisoformat(date_str.replace('Z', ''))
 	except ValueError:
 		raise ValueError("date does not conform to ISO 8601 format")
 
 	start = date - datetime.timedelta(days=1)
-	print(start, date)
 	response_data = {"items": []}
 
 	for unit in models.ShopUnit.objects.filter(date__gte=start, date__lte=date, unit_type=models.ShopUnitType.OFFER):
@@ -169,6 +171,7 @@ def get_sales(date_str: str) -> dict:
 
 def get_node_statistic(uuid: str, date_start_str: str, date_end_str: str) -> dict:
 	"""Возвращает список обновления объекта ShopUnit с указанным UUID за заданный полуинтервал"""
+
 	validations.validate_uuid(uuid)
 	try:
 		date_start = datetime.datetime.fromisoformat(date_start_str.replace('Z', ''))
@@ -198,8 +201,20 @@ def get_node_statistic(uuid: str, date_start_str: str, date_end_str: str) -> dic
 	return response_data
 
 
-def _get_parent_and_item(idx: int, data: ImportData, unit_indexes: dict) -> (models.ShopUnit, ImportUnit):
+def _get_unit_indexes(data: ShopUnitImportRequest) -> dict[UUID, int]:
+	"""Возвращает карту индексов импортируемых элементов и проверяет уникальность UUID в данном импорте"""
+
+	unit_indexes = {}
+	for idx, item in enumerate(data.items):
+		if unit_indexes.get(item.uuid) is not None:
+			raise ValueError("there should not be multiple units with the same uuid")
+		unit_indexes[item.uuid] = idx
+	return unit_indexes
+
+
+def _get_parent_and_item(idx: int, data: ShopUnitImportRequest, unit_indexes: dict) -> (models.ShopUnit, ShopUnitImport):
 	"""Возвращает элемент и его родителя, проверяя существует ли родитель в базе или в передаваемом списке"""
+
 	item = data.items[idx]
 	parent = None
 
@@ -220,8 +235,9 @@ def _get_parent_and_item(idx: int, data: ImportData, unit_indexes: dict) -> (mod
 	return parent, item
 
 
-def _update_parent_price(units: Iterable[models.ShopUnit], date: datetime.datetime = None):
+def _update_parent_price(units: Iterable[models.ShopUnit], date: datetime.datetime = None) -> None:
 	"""Обновляет цену у категории и её родителей на среднюю цену всех её товаров и товаров дочерних категорий"""
+
 	for curr_unit in units:
 		while curr_unit is not None:
 			parent_price = models.ShopUnit.custom_objects.get_parent_price(str(curr_unit.uuid))
@@ -238,8 +254,10 @@ def _update_parent_price(units: Iterable[models.ShopUnit], date: datetime.dateti
 			curr_unit = curr_unit.parent
 
 
-def _add_unit_statistic(unit: models.ShopUnit):
-	unit_statistic = models.ShopUnitStatistic(
+def _add_unit_statistic(unit: models.ShopUnit) -> None:
+	"""Сохраняет изменение объекта ShopUnit в базу данных"""
+
+	models.ShopUnitStatistic.objects.create(
 		shop_unit=unit,
 		name=unit.name,
 		date=unit.date,
@@ -247,4 +265,3 @@ def _add_unit_statistic(unit: models.ShopUnit):
 		unit_type=unit.unit_type,
 		price=unit.price
 	)
-	unit_statistic.save()

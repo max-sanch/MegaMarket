@@ -22,6 +22,7 @@ def imports(request):
 		return ErrorResponse(400, "Validation Failed")
 	return HttpResponse(content_type="application/json")
 
+
 @require_http_methods(["DELETE"])
 def delete(request, uuid):
 	try:
@@ -31,6 +32,7 @@ def delete(request, uuid):
 	except Exception:
 		return ErrorResponse(400, "Validation Failed")
 	return HttpResponse(content_type="application/json")
+
 
 @require_http_methods(["GET"])
 def nodes(request, uuid):
@@ -42,6 +44,7 @@ def nodes(request, uuid):
 		return ErrorResponse(400, "Validation Failed")
 	return JsonResponse(unit)
 
+
 @require_http_methods(["GET"])
 def sales(request):
 	try:
@@ -51,10 +54,12 @@ def sales(request):
 		return ErrorResponse(400, "Validation Failed")
 	return JsonResponse(units)
 
+
 @require_http_methods(["GET"])
 def node_statistic(request, uuid):
 	try:
-		date_start = request.headers.get("dateStart") if request.GET.get('dateStart') is None else request.GET.get('dateStart')
+		date_start = request.headers.get("dateStart") if request.GET.get('dateStart') is None else request.GET.get(
+			'dateStart')
 		date_end = request.headers.get("dateEnd") if request.GET.get('dateEnd') is None else request.GET.get('dateEnd')
 		units = services.get_node_statistic(uuid, date_start, date_end)
 	except models.ShopUnitStatistic.DoesNotExist:
