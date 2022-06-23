@@ -2,5 +2,4 @@
 venv
 .database
 
-printoplace/.env
 Task.md
